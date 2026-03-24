@@ -1,18 +1,21 @@
-name: Check USITC Tariff Revisions
+name: Check and Load HTS Revisions
 
 on:
   schedule:
     - cron: '0 12 * * *'
+  push:
+    paths:
+      - 'hts_2026_*.json'
   workflow_dispatch:
 
 jobs:
   check:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Check for new revision
-        id: check
         run: |
           CURRENT=$(ls -1 hts_2026_revision_*_json.json 2>/dev/null | sort -t_ -k4 -n | tail -1 | grep -o 'revision_[0-9]*' | grep -o '[0-9]*' || true)
           if [ -z "$CURRENT" ]; then
@@ -21,46 +24,73 @@ jobs:
             NEXT=$((CURRENT + 1))
           fi
           echo "Checking revision $NEXT..."
-          echo "next=$NEXT" >> $GITHUB_OUTPUT
 
           URL="https://www.usitc.gov/sites/default/files/tata/hts/hts_2026_revision_${NEXT}_json.json"
-          HTTP_CODE=$(curl -s -o /tmp/revision.json -w "%{http_code}" -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" "$URL")
 
-          echo "HTTP status: $HTTP_CODE"
-          if [ "$HTTP_CODE" = "200" ]; then
-            SIZE=$(wc -c < /tmp/revision.json)
-            echo "Downloaded $SIZE bytes"
-            if [ "$SIZE" -gt 1000 ]; then
-              cp /tmp/revision.json "hts_2026_revision_${NEXT}_json.json"
-              echo "found=true" >> $GITHUB_OUTPUT
-              echo "filename=hts_2026_revision_${NEXT}_json.json" >> $GITHUB_OUTPUT
-              exit 0
-            else
-              echo "File too small, likely error page"
-              echo "found=false" >> $GITHUB_OUTPUT
-              exit 0
+          # Try multiple user agents
+          for UA in \
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"; do
+
+            HTTP_CODE=$(curl -s -o /tmp/revision.json -w "%{http_code}" \
+              -H "User-Agent: $UA" \
+              -H "Accept: application/json,text/html,*/*" \
+              -H "Accept-Language: en-US,en;q=0.9" \
+              --connect-timeout 30 \
+              "$URL")
+
+            echo "HTTP status: $HTTP_CODE (UA: ${UA:0:20}...)"
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              SIZE=$(wc -c < /tmp/revision.json)
+              echo "Downloaded $SIZE bytes"
+              if [ "$SIZE" -gt 10000 ]; then
+                cp /tmp/revision.json "hts_2026_revision_${NEXT}_json.json"
+                git config user.name "github-actions"
+                git config user.email "actions@github.com"
+                git add .
+                git commit -m "Add USITC HTS 2026 Revision $NEXT"
+                git push
+                echo "NEW_REVISION=true" >> $GITHUB_ENV
+                echo "FILENAME=hts_2026_revision_${NEXT}_json.json" >> $GITHUB_ENV
+                break
+              fi
             fi
-          else
-            echo "No new revision found"
-            echo "found=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
+          done
 
-      - name: Commit new revision
-        if: steps.check.outputs.found == 'true'
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add .
-          git commit -m "Add USITC HTS 2026 Revision ${{ steps.check.outputs.next }}"
-          git push
+          if [ -z "$NEW_REVISION" ]; then
+            echo "No new revision available (Rev $NEXT not published yet)"
+          fi
+          exit 0
 
       - name: Trigger API load
-        if: steps.check.outputs.found == 'true'
+        if: env.NEW_REVISION == 'true'
         run: |
-          FILENAME="${{ steps.check.outputs.filename }}"
           RAW_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/${FILENAME}"
           sleep 30
+          RESPONSE=$(curl -s --max-time 300 -X POST \
+            "${{ secrets.API_URL }}/admin/load-from-url?url=${RAW_URL}&apiKey=${{ secrets.ADMIN_API_KEY }}")
+          echo "API response: $RESPONSE"
+
+  load:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find latest file
+        id: find
+        run: |
+          LATEST=$(ls -1t hts_2026_*.json | head -1)
+          echo "Latest file: $LATEST"
+          echo "filename=$LATEST" >> $GITHUB_OUTPUT
+          exit 0
+
+      - name: Trigger API load
+        run: |
+          FILENAME="${{ steps.find.outputs.filename }}"
+          RAW_URL="https://raw.githubusercontent.com/${{ github.repository }}/main/${FILENAME}"
+          echo "Loading from: $RAW_URL"
           RESPONSE=$(curl -s --max-time 300 -X POST \
             "${{ secrets.API_URL }}/admin/load-from-url?url=${RAW_URL}&apiKey=${{ secrets.ADMIN_API_KEY }}")
           echo "API response: $RESPONSE"

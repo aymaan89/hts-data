@@ -37,10 +37,12 @@ jobs:
             else
               echo "File too small, likely error page"
               echo "found=false" >> $GITHUB_OUTPUT
+              exit 0
             fi
           else
             echo "No new revision found"
             echo "found=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
       - name: Commit new revision

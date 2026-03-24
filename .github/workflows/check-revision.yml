@@ -14,7 +14,7 @@ jobs:
       - name: Check for new revision
         id: check
         run: |
-          CURRENT=$(ls -1 hts_2026_revision_*_json.json 2>/dev/null | sort -t_ -k4 -n | tail -1 | grep -o 'revision_[0-9]*' | grep -o '[0-9]*')
+          CURRENT=$(ls -1 hts_2026_revision_*_json.json 2>/dev/null | sort -t_ -k4 -n | tail -1 | grep -o 'revision_[0-9]*' | grep -o '[0-9]*' || true)
           if [ -z "$CURRENT" ]; then
             NEXT=1
           else
@@ -34,6 +34,7 @@ jobs:
               cp /tmp/revision.json "hts_2026_revision_${NEXT}_json.json"
               echo "found=true" >> $GITHUB_OUTPUT
               echo "filename=hts_2026_revision_${NEXT}_json.json" >> $GITHUB_OUTPUT
+              exit 0
             else
               echo "File too small, likely error page"
               echo "found=false" >> $GITHUB_OUTPUT
